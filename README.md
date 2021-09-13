@@ -4,4 +4,6 @@ This is my work on the Capital One Data Challenge in 2020, which was completed i
 
 This analysis recently become NON-CONFIDENTIAL since the challenge per se has finally EXPIRED in August 2021 as a new scenario has been introduced.
 
+# To view the analysis
 
+## For best result, please download the html file above and confirm it's html format when open.
