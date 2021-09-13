@@ -1,0 +1,950 @@
+---
+title: "Data Challenge 2020"
+subtitle: "CONFIDENTIAL"
+author: "Sherlock Zhang"
+date: "1/25/2020"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+    theme: spacelab
+    highlight: tango
+    df_print: paged
+urlcolor: blue
+always_allow_html: true
+---
+\newpage
+# I. The Business Problem & Our Insights
+## 1. What Is the Case?
+
+We are consulting for a real estate company that has a niche in rental property investment for short-term gains as part of their business model, specifically within New York City. The real estate company has already concluded that two bedroom properties are the most profitable. Now, they need to find out which zip codes are the best to invest in in terms of generating the most profit on short term rentals within New York City.
+
+The primary data sources from both Zillow and AirBnB are public available. For the cost data, Zillow provides us an estimate of value for two-bedroom properties. For the revenue data, AirBnB is the medium through which the investor plans to lease out their investment property.
+
+**Our objective is here is to find a way to help this real estate company to find out the zipcodes that can generating the most short-term return from the two bedrooms properties they invest.** And the main approach we use will be centered around the exploratory analysis along with business interpretation.
+
+
+## 2. What Is Success?
+
+Explicitly, we define the success of this analytics project as providing top zipcodes in New York City meeting the client's expectations. In addtion to answering this specific business question, we should also clarify our exploratory logic and conduct the analysis in a scalable manner so it can be applied with either new data or new scenarios in the future.
+
+To achieve this goal, our analysis should facilitate the company to dive deep in the collected data for hidden insights by primarily focusing on:  
+
+**1) deploy sophisticated data treatment to filter out those useful information.**   
+**2) interpret the analysis result accordingly to decide the zipcodes with high profitability.**  
+
+## 3. What Are the Assumptions?  
+
+Initially, there are four main assumptions provided by the client:  
+1. The occupancy rate is 75%.  
+2. All investment will be paid in cash at once with no mortgage, thus no concerns on interest rate.  
+3. The time value of money discount rate is 0%.  
+4. All properties and all square feet within each locale can be assumed to be homogeneous.  
+
+As the anlysis goes, more assumptions were made by us in order to simplify the procedure without critical influence on the integrity of our analysis result. **Those assumptions are mentioned in the following context respectively and also summarized as followed:**    
+
+**1.** When calculate the Cap Rate, instead of net operating income, we use annual revenue without concerns on expense.  
+**2.** When using _zillow_ dataset to predict the current cost of properties in July 2019 (latest data in _airbnb_ dataset), we assume there is seasonality in the price and also that values depend not only on previous values (Auto Regressive AR) but also on diiferences between previous values (Moving Average MA).   
+**3.** About the price of those property that rent out the space as private rooms, we assume that both rooms are booked at the same time. Thus, the occupancy rate is same as regular entire apartment.   
+**4.** When calculate revenue, we assume cleaning fee is not considered.   
+**5.** In addition to availability, we intuitively assume that more reviews and longer listeing time equate to popular properties and popular neighborhood/zipcode  
+**6.** No concern on property appreciation and other financial factors.  
+
+\newpage
+# II. Data Processing
+In this section, we have four parts:  
+1) Initial setups, including loading R libraries and reading datasets  
+2) Data treatment on *airbnb* dataset, including cleaning, munging, and filtering  
+3) Data treatment on *zillow* dataset, including cleaning, munging, and filtering  
+4) Data join, along with some some simple feature engineering  
+
+## 1. Initial Set-up
+### 1.1. Install and Load Packages
+In this part, to simplify the process of installing, updating, and loading all necessary R packages, we used a special open source package _lubripack_. This package can be used to easily load multiple pacakges at once and automatically install and update them when necessary.
+
+```{r message=FALSE, warning=FALSE}
+
+# install this free devtool for automatic installing and loading packages
+library(devtools)
+install_github("espanta/lubripack")
+
+library(lubripack)
+
+# list all pacakges
+pkgs <- c("data.table", "dplyr", "ggplot2", "tidyr", "naniar", "colorspace",
+          "forecast", "astsa", "Amelia", "scales", "GGally", "Matrix",
+          "plotly","maps","kableExtra","matrixStats","mice","caret","DataExplorer","processx")
+
+# load all packages at once
+lubripack(pkgs)
+```
+```{r eval=FALSE, include=FALSE}
+if (!require("processx")) install.packages("processx")
+p <- plot_ly(z = ~volcano) %>% add_surface()
+orca(p, "surface-plot.svg")
+```
+
+### 1.2. Load Datasets
+1.	AirBnB data:  (Downloaded from http://data.insideairbnb.com/united-states/ny/new-york-city/2019-07-08/data/listings.csv.gz) This is the dataset that will provide revenue infomation for rental properties listed in the New York area. It was last uplated in July 2019.
+
+2. Zillow: (Provided seperately by the client) This ZIllow Home Value INdex(ZHVI) file is the time series dataset that will provide valuation for 2 bedrooms properties across multiple states, including New York, in a wide range of time period from the 90s to June 2017.  
+```{r}
+
+airbnb <- fread("listings.csv",header = TRUE, sep = "," , 
+                stringsAsFactors = TRUE, na.strings = c("","NA"))
+
+zillow <- fread("Zip_Zhvi_2bedroom.csv",header = TRUE, sep = "," , 
+                stringsAsFactors = TRUE, na.strings = c("","NA"))
+```
+
+
+#### 1.2.1. Datasets Inspection
+
+First, we should have a basic idea about the dimension of those two datasets.  
+```{r}
+dim(airbnb)
+dim(zillow)
+```
+The Airbnb listings data contains `r nrow(airbnb)` rows and `r ncol(airbnb)` columns, while the Zillow dataset contains `r nrow(zillow)` rows and `r ncol(zillow)` columns.  
+
+##### See Appendix 1 and 2 for the complete list for column names and summary of missing values for both datasets
+
+
+```{r eval=FALSE, warning=FALSE, include=FALSE}
+numMissingVal_airbnb <-sapply(airbnb, function(x) sum(length(which(is.na(x)))))  
+data.frame(numMissingVal_airbnb)
+```
+
+## 2. Data Treatment for *airbnb* Dataset
+
+
+### 2.1. Data Cleaning -- *airbnb* Dataset
+First of all, we will conduct some data cleaning procedures seperately before we proceed to extract only the data for 2 bedrooms properties in NYC. Then we will generate a user defined function to help filtering out useful and qualified columns. The entire cleaning procedure can also be used in the future when newer airbnb data become avaiable.  
+
+#### 2.1.1. Missing Values
+
+```{r eval=FALSE, include=FALSE}
+numMissingVal_airbnb <-sapply(airbnb, function(x) sum(length(which(is.na(x)))))  
+data.frame(numMissingVal_airbnb)
+```
+
+As the result indicated (see appendix 1), the majority of description columns and host related information are blank. Steps are taken in the later section to filter columns with higher percentage of Nulls/NA. We will focusing on those columns that are critical for our analysis.  
+
+First of all, unfortunately, zipcode column contains `r length(which(is.na(airbnb$zipcode)))` missing values. Ignoring these values can partially compromise the intergrity of the analysis. Zipcodes are imputed by selecting a non-NA value from _Neighbourhood Group Cleansed_.  
+
+```{r}
+airbnb <-
+  airbnb %>% group_by(neighbourhood_group_cleansed) %>% fill(zipcode) %>% ungroup()
+
+sum(is.array(airbnb$zipcode))
+```
+Total Number of NA values in Zipcode Column after Imputation is `r sum(is.array(airbnb$zipcode))`.  
+
+The rest of 
+
+#### 2.1.2. Remove Dollar Sign in Price-related Columns
+
+‘$’ Value prefix of every price row prevents numeric manipulation. It is thus removed from three columns: Price, Weekly Price & Monthly Price.
+```{r}
+
+dollarCols <- c("price", "weekly_price", "monthly_price", "cleaning_fee")
+
+replaceDollars <- function(x){
+  prices <- as.numeric(gsub("[$,]","", x))
+  return(prices)
+}
+
+airbnb[dollarCols] <- lapply(airbnb[dollarCols], replaceDollars)
+
+head(airbnb[dollarCols])
+```
+#### 2.1.3. Negative or Zero Valued Columns
+
+None of the price columns: Price, weekly price & Monthly price should have zero or negative value.
+```{r warning=FALSE}
+revCharCol <- colnames(airbnb %>% ungroup() %>% select_if(is.character))
+
+revZeroNeg <-
+  sapply(airbnb[,!(names(airbnb) %in% revCharCol)], function(x)
+  count(x <= 0, na.rm = TRUE))
+
+data.frame(revZeroNeg)
+```
+#### 2.1.4. Columns that need more detailed inspection: *bedrooms, beds*.
+```{r}
+table(airbnb$bedrooms)
+table(airbnb$beds)
+```
+There are 0 or NA input in these three columns, but no negative input was found. However, it is unusual that there are `r length(which(airbnb$bedrooms == 0))` properties that have no bedroom while there are `r length(which(airbnb$beds == 0))` properties even have no bed. But it is possible that those property are having other kind of beds, especailly given that there is no missing value in the _bed_type_ column.
+
+```{r}
+table(airbnb$bed_type)
+```
+This result confirms our assumption. Thus we don't need to pay extra attention to the number of bedrooms at this point.  
+Also, there are 11 inputs in the _price_ column that has a non-positive value. Since the number is fairly small, we can drop them without affecting the integrity of the analysis.  
+```{r}
+airbnb <- airbnb[airbnb$price > 0, ]
+```
+
+### 2.2. Data Filtering -- *airbnb*
+
+First of all, we filter out those records that are within our business scope to simplify the process and save computational power. In this case, it will be those 2 bedrooms properties in New York City.  
+
+Then, in order to remove columns that add little or no value to the analysis in a scalable way, some of the smart data munging techniques are incorporated. These include removing: 1) columns based on pattern matching with their names, 2) imbalanced columns, and 3) character columns with 100 % variance, etc.   
+
+For the main part in data filtering, we use associated methods to remove these columns from airbnb dataset and store the procedures as a user defined function (UDF) for future use. After that, we mannully exclude columns that contribute no significant value for further analysis.  
+
+#### 2.2.1. Business Scope - New York City & 2 Bedrooms
+Before proceeding to the next step, keep only those records that are from the New York City and has 2 bedrooms in the property given the business context. However, as it was noticed that there are many variations of NYC in the city column that requires much effort to eliminate, we can simply use state at this point for a preliminary procedure.  
+
+```{r}
+unique(airbnb$state)
+```
+
+Although the airbnb dataset per se is generated with the criteria of listing in New York City, it has many variations in the _city_ column and even include cities from other state.  
+
+_state_ is chosen here for filtering rather than _city_ because it is less likely to have typos in the name. Also, since we are going to merge Airbnb data and Zillow data, a preliminary filtering here will be sufficient to reduce the computational cost. More work can be done if needed as we proceed. The steps are listed here as reference for other applications in the future.  
+
+```{r}
+nBedrooms = 2   #### can be changed ####
+
+airbnb$state <- (gsub("Ny","NY",airbnb$state))
+airbnb$state <- (gsub("ny","NY",airbnb$state))
+airbnb$state <- (gsub("New York","NY",airbnb$state))
+
+airbnb <- airbnb[which(airbnb$state=="NY" & airbnb$bedrooms == nBedrooms),]
+```
+Now, the _airbnb_ dataset includes only those records that are within our business scope of 2 bedrooms rental properties in New York City.  
+
+#### 2.2.2. **Scalable Data Munging**
+We creat a **cleanAibnb** function here as a scalable solution to removes columns that will not be very useful in our case of analyze zipcode profitability. For reference purpose, all dropped columns are also listed. See Appendix 3 for details.
+
+**1. Zero Variance Cols**  
+
+Imbalanced/Zero Variance columns add no value to the analysis. These columns are removed using nearzeroVar method from Caret package.  
+
+**2. Pattern Matching**  
+
+Column names starting with “require”, “host”, “calendar” and ending with “url” and “nights” are irrelevant information when the property is invested in, by the real estate company.  
+
+**3. Based on NA Values**  
+
+Columns with over 60% NA values are removed without mercy. 
+
+
+__The clean Airbnb Function__
+```{r message=FALSE, warning=FALSE}
+cleanAirbnb <- function(tempdf){
+  
+  NApct = 0.6   #### can be changed ####    # see sec 3 in this chunk
+  # --------------------------------------
+  
+  # 1. Zero Variance Cols
+  # Columns Removed:
+  zvCol <- nearZeroVar(tempdf, saveMetrics = TRUE)
+  zvNames=rownames(subset(zvCol, nzv== TRUE))
+  tempdf <- tempdf[ , !(names(tempdf) %in% zvNames)]
+  
+  print("------ removed due to Zero Variance------")
+  print(zvNames)
+  print("--------------------------------------")
+  
+  
+  # 2. Pattern Matching
+  # Columns Removed:
+  pattern <-
+  colnames(
+  tempdf %>% select(
+    starts_with("require"),
+    starts_with("host"),
+    starts_with("calendar"),
+    ends_with("url"),
+    ends_with("nights")
+    )
+  )
+
+  tempdf <- tempdf[,!(names(tempdf) %in% pattern)]
+
+  print("------Columns removed due to defined patterns------")
+  print(pattern)
+  print("--------------------------------------")
+  
+  
+  # 3. Based on NA Values
+  # Columns with over 60% NA values are removed without mercy. 
+ 
+  # Columns Removed:
+  nadf <- tempdf %>% summarise_all(funs(sum(is.na(.))))
+  nadf <- nadf %>% gather(key = var_name, value = value, 1:ncol(nadf))
+  nadf$numNa <- round(nadf$value/nrow(tempdf),2)
+  naval <- nadf %>% filter(numNa > NApct) %>% pull(var_name)
+  
+  tempdf <- tempdf[,!(names(tempdf) %in% naval)]
+  
+  print("------Columns removed due to more than 60% NA values------")
+  print(naval)
+  print("--------------------------------------")
+  return(tempdf)
+}
+```
+
+Call the cleanAirbnb function and see what are those columns that have been removed.
+
+```{r message=FALSE, warning=FALSE}
+airbnb <- cleanAirbnb(airbnb)
+```
+One unexpected column that has been removed is the _square_feet_ column with 48487 NA values, which is approximately 99.2% of the total number of records. Since this information is usually important for real estate investment, some external data can be included if necessary. For this case, we will just leave it out of our concern.  
+
+#### 2.2.3. Mannually Remove Redundanct Columns
+Character columns with near 100% variance (Every Row is different) are removed as they provide no group level information that can be used on a larger population/scale. These columns include textual columns describing the home, host, amenties etc. For lack of conclusion from other variables, these columns can be revisited for sentiment analysis.
+
+Also, other columns that provide no specific benefit for our profitibility analysis in this case are also removed.
+
+```{r}
+dropCol <-
+  c(
+  'name', 'summary', 'space', 'description', 'neighborhood_overview', 'notes', 
+  'transit', 'access', 'interaction', 'house_rules', 'amenities',
+  'street', 'city', 'smart_location', 'is_location_exact', 'security_deposit',
+  'last_scraped', 'accommodates','neighbourhood','beds','bathrooms',
+  #'cleaning_fee',
+  'guests_included', 'extra_people', 'minimum_nights_avg_ntm', 'maximum_nights_avg_ntm',
+  'number_of_reviews_ltm', 'review_scores_communication', 'review_scores_checkin',
+  'review_scores_cleanliness', 'review_scores_value', 'reviews_per_month',
+  'review_scores_accuracy', 'review_scores_location',
+  'instant_bookable', 'cancellation_policy', 'is_location_exact',
+  'calculated_host_listings_count', 'calculated_host_listings_count_entire_homes',
+  'calculated_host_listings_count_private_rooms'
+  )
+
+airbnb <- airbnb[,!(names(airbnb) %in% dropCol)]
+```
+
+##### Duplicated Rows Detection
+Last step in data cleaning, let's double check if there is any duplicated rows.  
+```{r}
+airbnb[which(duplicated(airbnb) ==T),]
+```
+No duplicated rows has been found in the cleaned airbnb dataset. 
+
+
+## 3. Data Treatment for *zillow* Dataset
+
+### 3.1. Data Cleaning -- *zillow* Dataset
+Majority of columns in zillow Dataset are numeric input account for the median price of 2-bedroom properties between year 1996 and 2017 and spread monthly.
+
+#### 3.1.1. Missing Values Detection
+
+```{r eval=FALSE, include=FALSE}
+numMissingVal_zillow <-sapply(zillow, function(x) sum(length(which(is.na(x)))))  
+
+data.frame(numMissingVal_zillow)
+```
+Median Price for early years (1996-2013) has plenty of Nulls as shown in the Appendix 2. This is also not consistent across all Regionnames. Steps are taken in the next section to filter out columns with high percentage of Nulls/NA.  
+
+#### 3.1.2. Negative or Zero Value
+
+```{r}
+costCharCol <- colnames(zillow %>% ungroup() %>% select_if(is.character))
+
+costZeroNeg <-
+  sapply(zillow[, !(names(zillow) %in% costCharCol)], function(x)
+  count(x <= 0, na.rm = TRUE))
+
+table(costZeroNeg)
+```
+
+There is no negative or zero input in all the non character columns(Int/Numeric) as shown in the output table.
+
+### 3.2. Data Filtering -- *Zillow* dataset
+
+#### 3.2.1. **Scalable Data Munging**
+
+The _zillow_ dataset only provide cost information as late as June 2017, while the _airbnb_ dataset is two years ahead. It is obvious that this discrepency between cost and revenue will compromise the integrity of our analysis. So we use Time Series Forecasting (ARIMA in this case) to predict the lastest price. 
+
+We incorporated this predicitive model within a function called **cleanZillow** where the input to the function is the zillow Dataset and the city where we want to buy the property. The various steps performed in the function are as followed:  
+
+1. Select only relevant columns such as _RegionName_ which denotes the _zipcode_, _city_, _SizeRank_, and the *predicted* cost of the property in July 2019.  
+
+2. Filter out the data to include only those rows which belong to the city provided as a function argument, which in our case is *New York City*.   
+
+3. Due to shortage of time, we will assume that there is seasonality in the price and also that values depend not only on previous values (Auto Regressive AR) but also on diiferences between previous values (Moving Average MA).   
+
+**Attention:** we applied **ARIMA** model with the assumpition of having seasonality to predict the cost of the properties in Zipcodes from July 2017 to July 2019. We then attach the price of property in July 2019 (calculated at zipcode level) to a new column named _cost_.  
+
+__The clean Zillow Function__
+```{r warning=FALSE} 
+cleanZillow <- function(tempdf,cityName){ # Zillow data and New york city given as function arguement
+  tempdf <- tempdf[,c(2,3,7,226:262)] # Select only relevant columns
+  
+  tempdf <- filter(tempdf,City==cityName) # Filter for the required city
+  
+  colnames(tempdf)[colnames(tempdf)=="RegionName"] <- "zipcode" # Set proper column name to be used for merging later
+  
+  tempdf$cost <- NULL # Create a new column to store the latest price in May 2018
+  # we define a for loop to iterate over each zipcode to obtain latest cost of property
+  for(i in 1:nrow(tempdf)){
+    tmp = ts(as.vector(t(tempdf[,c(4:40)])[,i]),start = c(2014,6),frequency = 12) # Convert the monthly cost data into time series data 
+  
+    ARIMAfit = arima(tmp, order=c(1,1,1), seasonal=list(order=c(1,0,1),period=NA), 
+                     method="ML")# Define ARIMA model to be used for prediction
+    
+    pred = predict(ARIMAfit, n.ahead = 25)# use the ARIMA model to predict the price from July 2017 to July 2019
+    #### n.ahead to be changed ####
+    
+    predval <- pred$pred # Store the predicted values in a variable
+    
+    tempdf$cost[i] <- predval[length(predval)] # set the value of current price for the specific zipcode as price in July 2019
+  }
+  return(tempdf[,c(1,2,3,41)]) # return the filtered columns containing only zipcode, City, SizeRank, and cost
+}
+```
+
+We call the above function by passing the available Zillow Data and also the city name as **New York**  
+
+```{r warning=F} 
+city="New York"
+zillow <- cleanZillow(zillow,city) # call cleanZillow function
+data.frame(zillow) # view the structure of clean and filtered Zillow data
+```
+The final clean data contains `r ncol(zillow)` columns i.e. Zipcode, City, SizeRank and the current price of property in the particular zipcode. There are `r nrow(zillow)` rows where each row describes unqiue zipcode.  
+
+##### Duplicated Rows Detection  
+
+Last step in data cleaning, let's double check if there is any duplicated rows.  
+```{r}
+zillow[which(duplicated(zillow) ==T),]
+```
+No duplicated rows has been found in the cleaned _zillow_ dataset. 
+
+
+
+## 4. Data Join, Inspection, and Feature Engineering
+
+The _final_ dataset containing both revenue and cost data is merged based on common zipcode in both cleaned _airbnb_ and cleaned _zillow_ dataset. 
+
+```{r}
+final <- merge(airbnb, zillow, by = "zipcode")
+dim(final)
+```
+Let's have a preview on the merged dataset _final_.  
+
+```{r}
+glimpse(final)
+```
+#### 4.1. Correction on Zipcode 10013 & Its Neighbourhood Group  
+
+Upon inspection on the matching of zipcode and neighbourhood group, we find that **10013 has been assigned to both *Manhattan* and *Brooklyn*,** which should not have happend.
+
+```{r}
+final %>% select(zipcode, neighbourhood_group_cleansed) %>% distinct()
+```
+
+After research, it is clear that **10013 should only belong to Manhattan**, thus we make the correction here.  
+
+```{r}
+final <- within(final, neighbourhood_group_cleansed[neighbourhood_group_cleansed == 'Brooklyn' 
+                                                    & zipcode == '10013'] <- 'Manhattan')
+```
+
+#### 4.2. Correction on Price for Properties listed as *Private Room*  
+
+For those 2 bedrooms listings that offer private rooms, price of the daily rental in Revenue data is reflective of the space that is offered but not the entire property itself. The price must be specifically corrected to account for entire property to account the benefit.  
+
+*Assumption Made:* For those property that rent out the space as private rooms, we assume that both rooms are booked at the same time. Thus, the occupancy rate is same as regular entire apartment. If the property type is Private Room, it is multipled by number of bedrooms to account for overall price. Correction applied is returned to original price column.  
+
+```{r}
+final <- final %>% mutate(price = if_else(room_type == "Private room",
+                          price * nBedrooms, # bedroom is predifined to be 2 in this case
+                          price)) 
+```
+
+##### 4.3. UDF -- Normalization
+Create a function to normalize certain columns into 0-1 scale based on the min-max value of the column so they can contribute value to the analysis in the following section.
+
+```{r}
+normalize <- function(x){
+  return((x-min(x))/(max(x)-min(x)))
+}
+```
+
+First, we will normalize the *number_of_reviews* column.
+```{r echo=TRUE}
+final["normalized_number_of_reviews"] <- lapply(final["number_of_reviews"], normalize)
+
+summary(final$normalized_number_of_reviews)
+```
+This summary indicates that there are a very small number of popular properties that are getting lots of reviews while the majority of them get only a handful of reviews.
+
+#### 4.4. Detection on Missing Values  
+
+List and compare the NA values and percentage of the final dataset before further feature engineering and analysis.  
+
+```{r warning=FALSE}
+# Check number of NA in all the columns
+missingValues <- as.data.frame(colSums(sapply(final,is.na)))
+
+# Convert rownames to columns
+missingValues <- as.data.frame(setDT(missingValues, keep.rownames = TRUE))
+
+# Rename the column names
+colnames(missingValues) <- c("columnName","totalNA_values")
+
+# Transform totalNA to percent, add it as column and arrange in descending order on the basis of it
+missingValues <- missingValues %>% 
+  mutate_at(vars(totalNA_values),funs(percentNA_values=.*100/nrow(final))) %>% 
+  arrange(desc(percentNA_values)) 
+
+# Check the top columns having maximum NA values 
+data.frame(missingValues)
+```
+
+#### 4.5. Feature Engineering
+Although there are still some NA values in the _final_ dataset, including _review_scores_rating_, _first_review_, _last_review_, and _cleaning_fee_, they will not significantly impaire our further analysis. Besides, if necessary in the future, we can consider impute the NA values in the _cleaning_fee_ column, while the other three columns tends to be unimputable. **We store those aggregate information in another dataset _final_sum_.**    
+
+```{r warning=FALSE}
+# Find average of the required columns
+avg_df <- final %>% 
+  group_by(zipcode) %>% 
+  summarise_at(vars(price:cost),mean) # mean of current price and other price attributes
+
+# Find unique id (no. of properties) for each zipcode
+unique_num_df <- final %>% select(zipcode,id) %>% 
+    group_by(zipcode) %>%
+    mutate(unique_num = n_distinct(id)) %>% 
+    select(zipcode,unique_num) %>% distinct() # count number of properties in each zipcode as unique_id
+
+unique_nb <- final %>% 
+  select(zipcode, neighbourhood_group_cleansed) %>%
+  group_by(zipcode) %>%
+  select(zipcode, neighbourhood_group_cleansed) %>% 
+  distinct()
+
+# Combine both the dataframes to get final summary of the data
+final_sum <- inner_join(avg_df, unique_num_df, by = "zipcode") # combine two agregations using zipcode
+final_sum <- distinct(inner_join(final_sum, unique_nb, 
+                                 by = "zipcode")) # Append neighbourhood_group_cleansed to final_sum
+summary(final_sum)
+```
+
+From the summary above, we know that there are `r length(final_sum$zipcode)` zipcodes in New York City that have rental properties listed on Airbnb. Currently, there are at least  `r min(final_sum$unique_num)` such property in any zipcode, while at most `r max(final_sum$unique_num)` such properties per zipcode.  
+
+
+\newpage
+# III. Analysis and Visualization
+
+## 1. Calculation of Three Financial Metrics  
+
+Having the business goal of finding the zipcode whose rental properties can generate the most short-term profits, it is necessary to have a metrix to measure the performance and short term potential of those zipcode in NYC. We will look at the revenue from monthly, quarterly, and yearly basis, with the assumption of having an occupancy rate of 75% among all time.  
+
+Besides, we will refer to two most important financial ratio in rental property business: the **Capitalization Rate** and the **Rent Rate**. In this case, they are calculated as:  
+
+$${Cap\;Rate} = \frac{Annual\;Revenue}{Total\;Investment\;on\;Property}$$  
+
+$${Rent\;Rate} = \frac{Monthly\;Revenue}{Total\;Investment\;on\;Property}$$
+```{r}
+# Create variables and assign value
+occupancy_rate <- .75
+month_days <- 30
+quarter_days <- 90    # number of days in a quarter
+semiyear_days <- 180  # number of days in half a year
+year_days <- 365      # number of days in a year
+
+#Sum the total cost in each zipcode by multiplying the avg price and the num of listings
+final_sum$Total_cost <- final_sum$cost*final_sum$unique_num
+
+# Revenue Calculation
+# Generate the revenue for first quarter
+final_sum$Revenue_month <-
+  occupancy_rate*month_days*(final_sum$price)*final_sum$unique_num
+# Generate the revenue for first quarter
+final_sum$Revenue_quarter <- 
+  occupancy_rate*quarter_days*(final_sum$price)*final_sum$unique_num
+# Generate the revenue for second quarter
+final_sum$Revenue_semiyear <- 
+  occupancy_rate*semiyear_days*(final_sum$price)*final_sum$unique_num
+# Generate the revenue for first year
+final_sum$Revenue_year <- 
+  occupancy_rate*year_days*(final_sum$price)*final_sum$unique_num
+
+
+## Financial Ratios
+# Rent Ratio = Monthly Rent / Cost of the Property
+final_sum$Rent_Rate <- final_sum$Revenue_month / final_sum$Total_cost
+# Capitalization Rate = Net Operating Income / Total Cost
+final_sum$Cap_Rate = final_sum$Revenue_year / final_sum$Total_cost
+#final_sum$Cap_Rate_pct = as.numeric(percent(final_sum$Revenue_year / final_sum$Total_cost))
+
+# derive the percent of properties listed for the given zipcode
+final_sum$Percent_units <- final_sum$unique_num*100/sum(final_sum$unique_num)
+```
+
+## 2. Visualization and Interpretation
+In this section, we will look at the dataset from a general perspective at neighbourhood level and then dive deeper into those zipcodes that **have at least 10 properties listed** to find the ones that ultimately match our business goal in terms of three metrics: Number of properties, revenue, and Cap Rate. Once top zipcodes are chosed, they will then be cross-examined in three tests on property-type diversity, rental availabilty, and popularity (indicated by the frequency of reviews). 
+
+Before we start, let's create a function that can:  
+**1) sort the result in descending order**  
+**2) contains only the top 10 zipcodes where there are *at least 10 properties* listed on AirBnB.**  
+
+```{r}
+my_plot <- function(col_name){
+  
+  v <- enquo(col_name)
+  
+  n = 10 # select top n values
+  
+  df_sorted_unique_num <- arrange(final_sum[final_sum$unique_num > 10,],
+                                  desc(!!v)) [1:n,] 
+  # order data and keep only those zipcodes with more than 10 properties
+  
+  # reassign factor levels
+  df_sorted_unique_num$zipcode <- factor(df_sorted_unique_num$zipcode)
+  
+  # Return zipcodes
+  return(df_sorted_unique_num)
+  
+}
+```
+
+#### 1) Relationship Among Investment, Revenue, and Cap Rate
+We create a bubble plot to see the trend among total investment (x-axis), annual revenue (y-axis) and Cap Rate (size of bubble) as below. Neighbourhood is also indicated by color.  
+
+```{r message=FALSE, warning=FALSE}
+plot_ly(final_sum, y = ~Revenue_year, x = ~Total_cost, text = ~zipcode, 
+        type = 'scatter', mode = 'markers', size = ~Cap_Rate,
+        color = ~neighbourhood_group_cleansed, 
+        marker = list(opacity = 0.8, sizemode = 'diameter')) %>% 
+  layout(title = 'Annual Revenue vs Total Cost in each Zipcode',
+         xaxis = list(showgrid = T),
+         yaxis = list(showgrid = T),
+         showlegend = T) %>% 
+  layout(legend = list(x = 100, y = 0.5)) # %>% # uncomment code below for pdf file
+  # add_annotations(text = final_sum$zipcode, 
+  #                 arrowhead = 4, arrowsize = .5, ax = 20, ay = -40)
+```
+In general, with high cost of property, the annual revenue is also high. However, this fact does not indicate that those properties also have a considerable Cap rate. For example, 10035 has the highest revenue of about 77M and a medium high cost of about 1.79B, it only has a Cap Rate of 4.3% (small bubble); however, 10309, on the other hand, has the highest Cap Rate of 23% but only 1.95M in revenue and 451K in investment. This discovery infers the trend among revenue, investment cost, and cap rate. It is in accordance with the investment reality, but doesn't explicitly tell us which are the best zipcodes to invest for short-term profit.   
+
+#### 2) Number of Properties by Zipcode
+Let's have a overview of the number of properties listed in each zipcode and aggregately in each neighbourhood.
+```{r message=FALSE, warning=FALSE}
+ggplot(final, aes(zipcode, fill = neighbourhood_group_cleansed)) + 
+  geom_bar() + labs(x = "Zipcode", y = "Number of Properties") + 
+  geom_text(stat='count', aes(label=..count..), vjust= -0.3) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  + 
+  theme_bw() + 
+  theme(plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  labs(fill = "Neighbourhood") + 
+  ggtitle("Number of Properties by Zipcode and Neighbourhood")
+```
+We can see that Manhattan and Brooklyn has significantly more properties than Queens and Staten Island. 
+
+#### 3) Properties in each Zipcode VS. Total Properties in NYC
+When comparing the properties in each zipcode to the total properties in NYC using both number and percentage.
+```{r message=FALSE, warning=FALSE}
+p1 <- my_plot(Percent_units) 
+# call the ordering and filtering function using Percent units as key metric
+p1$zipcode <- factor(p1$zipcode, 
+                     levels = unique(p1$zipcode)[order(p1$unique_num, 
+                                                       decreasing = TRUE)])
+
+p1 %>% plot_ly() %>%
+  add_trace(x=~zipcode, y=~unique_num, type = 'bar', name = 'Number', 
+            marker = list(color = c('green','grey','grey','grey','grey',
+                                    'grey','grey','grey','grey','grey'))) %>%
+  add_trace(x=~zipcode, y=~Percent_units, type = 'scatter', mode = 'line', 
+            name = 'Percentage', yaxis = 'y2', line=list(color = '#45171D') ) %>%
+  layout(title = "Top zipcodes with the most properties",
+         xaxis = list(title = "Zipcodes"),
+         yaxis = list(side = 'left', title = "Number of Properties"),
+         yaxis2 = list(side = 'right', overlaying = 'y', title = "Percentage Over All"),
+         showlegend = T) %>% 
+  layout(legend = list(x = 0.8, y = 0.9))
+```
+The top 5 zipcodes with the most number of properties are: **11215, 10036, 10003, 10025, 11217**  
+
+```{r include=FALSE}
+top <- c(11215, 10036, 10003, 10025, 11217)
+```
+
+```{r eval=FALSE, include=FALSE}
+## not included in the output
+dff <- my_plot(Percent_units) # call the ordering and filtering function using Percent units as key metric
+dff$zipcode <- factor(dff$zipcode, 
+                      levels = unique(dff$zipcode)[order(dff$Percent_units, 
+                                                         decreasing = TRUE)])
+
+# plot bar graph
+dff %>%  plot_ly( x = ~zipcode, y = ~Percent_units, type = 'bar',
+                  marker = list(color = c('green','grey','grey','grey','grey',
+                                          'grey','grey','grey','grey','grey'))) %>%
+  #plot_ly( x = ~zipcode, y = ~unique_num, type = 'line') %>%
+  layout(title = "Top zipcodes with maximum percent of properties",
+         xaxis = list(title = "Zipcodes"),
+         yaxis = list(title = "Percent"))
+```
+
+```{r eval=FALSE, include=FALSE}
+## not included in the output
+
+dff <- my_plot(unique_num) # call the ordering and filtering function using number of properties as key metric 
+dff$zipcode <- factor(dff$zipcode, 
+                      levels = unique(dff$zipcode)[order(dff$unique_num, 
+                                                         decreasing = TRUE)])
+
+# plot bar graph
+dff %>%  plot_ly( x = ~zipcode, y = ~unique_num, type = 'bar',
+                  marker = list(color = c('green','grey','grey','grey','grey',
+                                          'grey','grey','grey','grey','grey'))) %>%
+  layout(title = "Top Zipcodes with maximum number of properties",
+         xaxis = list(title = "Zipcodes"),
+         yaxis = list(title = "Number of Properties available rent"))
+```
+
+
+
+#### 4) Top zipcodes by Revenue
+
+In this part, we show two charts with one being quarterly revenue and another one being annual revenue. 10036 makes the most revenue with 3.5M per quarter and 14.3M per year. While top 5 zipcode all have more than 2.5M in quarterly revenue and 11M in annual revenue.  
+
+The top 5 zipcodes with the most revenue are: **10036, 10003, 10013, 10025, 10011**
+
+
+```{r message=FALSE, warning=FALSE}
+p2 <- my_plot(Revenue_quarter) # call the ordering and filtering function using number of properties as key metric 
+p2$zipcode <- factor(p2$zipcode, 
+                     levels = unique(p2$zipcode)[order(p2$Revenue_quarter, 
+                                                       decreasing = TRUE)])
+
+# plot bar graph for quarter 1
+p2 %>%  plot_ly( x = ~zipcode, y = ~Revenue_quarter, type = 'bar',
+                 marker = list(color = c('green','grey','grey','grey','grey',
+                                         'grey','grey','grey','grey','grey'))) %>%
+  layout(title = "Top zipcodes by Revenue in a Quarter",
+         xaxis = list(title = "Zipcode"),
+         yaxis = list(title = "Revenue"))
+```
+
+```{r message=FALSE, warning=FALSE}
+p3 <- my_plot(Revenue_year) # call the ordering and filtering function using number of properties as key metric 
+p3$zipcode <- factor(p3$zipcode, 
+                     levels = unique(p3$zipcode)[order(p3$Revenue_year, 
+                                                       decreasing = TRUE)])
+
+# plot bar graph
+p3 %>%  plot_ly( x = ~zipcode, y = ~Revenue_year, type = 'bar',
+                 marker = list(color = c('green','grey','grey','grey','grey',
+                                         'grey','grey','grey','grey','grey'))) %>%
+  layout(title = "Top Zipcodes by Revenue in a Year",
+         xaxis = list(title = "Zipcode"),
+         yaxis = list(title = "Revenue"))
+```
+
+#### 5) Top Zipcodes with highest Capitalization Rate & Rent Rate
+The Capitalization Rate is very important to rental real estate investment because it helps to evaluate real estate based on its current value and its net operating income (in this case, annual revenue). It gives them an initial yield on an investment property. An investor can look at a rising cap rate for a property and see that there’s a rise in income relative to its price. In contrast, a fall in cap rate generally indicates that there is lower rental income compared to its price.  
+
+A good cap rate is typically higher than 4 percent which is also approximately the average Cap Rate in NYC.  
+
+```{r message=FALSE, warning=FALSE}
+p4 <- my_plot(Cap_Rate) # call the ordering and filtering function using number of properties as key metric 
+p4$zipcode <- factor(p4$zipcode, 
+                     levels = unique(p4$zipcode)[order(p4$Cap_Rate, 
+                                                       decreasing = TRUE)])
+
+# plot bar graph
+p4 %>% plot_ly( x = ~zipcode, y = ~Cap_Rate, type = 'bar', 
+                marker = list(color = c('red','grey','grey','grey','grey',
+                                        'grey','grey','grey','grey','grey'))) %>%
+  layout(title = "Top Zipcodes with highest Capitalization Rate",
+         xaxis = list(title = "Zipcodes"),
+         yaxis = list(title = "Cap Rate"))
+```
+As it shows in the graph, among those 10 zipcodes that have at least 10 rental properties listed, all of them have a Cap Rate that is above 4% while 11434 has the highest Cap rate of 9.99%. 
+
+This trend is the same in terms of Rent Rate, while all top 10 are around 0.4% and the highest being 11434 with 0.82%.  
+
+```{r message=FALSE, warning=FALSE}
+p5 <- my_plot(Rent_Rate) # call the ordering and filtering function using number of properties as key metric 
+p5$zipcode <- factor(p5$zipcode, 
+                     levels = unique(p5$zipcode)[order(p5$Rent_Rate, 
+                                                       decreasing = TRUE)])
+
+# plot bar graph
+p5 %>% plot_ly( x = ~zipcode, y = ~Rent_Rate, type = 'bar', 
+                marker = list(color = c('red','grey','grey','grey','grey',
+                                        'grey','grey','grey','grey','grey'))) %>%
+  layout(title = "Top Zipcodes with highest Rent_Ratio",
+         xaxis = list(title = "Zipcodes"),
+         yaxis = list(title = "Rent_Ratio"))
+```
+
+The top 5 zipcodes with the highest Cap Rate & Rent Rate are: **11434, 10305, 10025, 10036, 11217** 
+
+#### 6) Checkpoints for Top Zipcodes over Three Financial Metrics
+
+In the above analysis, we have gathered three groups of top 5 zipcodes in terms of the number of properties, the amount of revenue, and the Cap Rate. Now we will see how frequent have those zipcodes scored in the top 5 range from those three perspectives.
+
+```{r echo=FALSE}
+top_zip <- c(11215, 10036, 10003, 10025, 11217,
+         10036, 10003, 10013, 10025, 10011,
+         11434, 10305, 10025, 10036, 11217)
+top = as.data.frame(table(top_zip))
+
+top
+```
+As the table above shows, 10025 and 10036 are in the top 5 range for all three criterias, while 10003 and 11217 have matched two criterias. 10011, 10013, 10305, 11215, and 11434 appeared only once.  
+
+**We will choose 10025, 10036, 10003, 11217 as the top zipcodes for now and further inspect them for property diversity, rental availability, and popularity in the following analysis.**  
+
+## 3. Other Tests: 
+
+After choosing the 4 top zipcodes above, we have three more tests to check their performance on property diversity, rental occupancy, and online popularity.  
+
+#### 1) Property Type vs. Investment Cost in difference zipcodes
+We should also have an overview on property type to ensure the rental properties listed are diversified so one type of property will not be overly supplied.
+```{r message=FALSE, warning=FALSE}
+propTypeCost <- ggplot(final, aes(x=property_type, y=cost, 
+                                  fill = neighbourhood_group_cleansed)) +
+  scale_y_continuous(labels = scales::comma) + 
+  geom_point(aes(col = neighbourhood_group_cleansed, size=cost, text = zipcode)) + 
+  geom_smooth(method="loess", se=F) + 
+  labs( x="Property type", y="Cost") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  theme(legend.position="bottom") + 
+  ggtitle("Property Type vs. Investment Cost in difference zipcodes")
+
+ggplotly(propTypeCost) %>% 
+  layout(legend = list(x = 100, y = 0))
+```
+As it shows, both Manhattan and Brooklyn have a good diversity on property type, and there is a clear price range difference for Apartment in those neighbourhoods. This fact once again raised the question of making choice on which neighbourhood to invest given that cash resources are usually limited.  
+
+Also, all four of our chosen top zipcodes - 10025, 10036, 10003, 11217 - are fairly diversified, while 10003 has 7 types of properties listed.      
+**10025 has 2 types of properties listed** (Apartment and Condominium);  
+**10036 has 4 types listed** (Apartment, Condominium, House, and Serviced Apartment);  
+**10003 has 7 types listed** (Apartment, Condominium, House, Loft, Other, Serviced Apartment, and Townhouse);  
+**11217 has 6 types listed** (Apartment, Condominium, Guest Suite, House, Loft, and Townhouse)
+
+#### 2) Rental Availability vs. Rental Price in Different Neighbourhood   
+
+In this case, we use _availability_365_ as the indicator for the rental availability. By looking into the trend between rental availability and the average rental price by zipcode in different neighbourhood, it tells us the possibility of  finding a popular property that can expect high occupancy and generate the most profit per stay.
+```{r message=FALSE, warning=FALSE}
+availablityPrice <- final %>% 
+  group_by(neighbourhood_group_cleansed,zipcode) %>% 
+  summarise_all(funs(mean)) %>% 
+  ggplot(aes(x=availability_365, y=price)) + 
+  scale_colour_brewer(palette = "Set1") +
+  geom_point(aes(col=neighbourhood_group_cleansed, size=price, text=zipcode)) +
+  labs(x="Availability", y="Price", colour= "Neighbourhood") + 
+  ggtitle("Rental Availability vs. Rental Price in Different Neighbourhood")
+
+ggplotly(availablityPrice)  %>% 
+  layout(legend = list(y = 1, x = 0.8))
+```
+As it demonstrate, properties in Manhattan have highest range of rental price above *$270* and is mostly more popular than other neighbourhoods. Properties in Brooklyn are very popluar in general and have a medium range of rental price from *$130* to *$250*. Also, there is a clear price difference for different neighbourhood.  
+
+Also, three of our chosen top zipcodes - 10025, 10003, 11217 - have a high occupancy rate while 10036 only has a medium performance.  
+
+#### 3) Popularity of Measured by Number of Reviews vs. Number of Weeks  
+
+Popularity is measured in terms of number of reviews and it is a proponent of time. We intuitively assume that more reviews and longer listeing time equate to popular properties and popular neighborhood/zipcode.
+
+Top 10 zipcodes from the popular section are 
+```{r message=FALSE, warning=FALSE}
+numDayperReview <- final %>% 
+  mutate(diff = round(difftime(last_review, first_review, units = "weeks"),0)) %>% 
+  drop_na(diff) %>% 
+  group_by(neighbourhood_group_cleansed,zipcode) %>% 
+  summarise_all(funs(mean)) %>% 
+  ggplot(aes(x = diff, y= number_of_reviews, text= zipcode, 
+             size=neighbourhood_group_cleansed,
+             col = neighbourhood_group_cleansed)) + 
+  scale_size_manual(values=c(5,3,4,2)) + 
+  geom_point() + labs(x="Number of Weeks", y="Number Of Reviews") + 
+  ggtitle("Popularity of Measured by Number of Reviews vs. Number of Weeks")
+
+ggplotly(numDayperReview) %>% 
+  layout(legend = list(x = 0, y = 1))
+
+```
+Generally, Brooklyn and Manhattan have been having rental property listed on AirBnb for a longer time, and Brooklyn seems to get even more reviews than Manhattan.
+
+As for the top 4 zipcode we have choosen, 10036 has the best performance because it has a relevantly high number of reviews although its listing time the shortest among those 4 zipcode. See below:  
+
+**10025** has been listed for more than **74 weeks** and have received about **19 reviews**  
+**10003** has been listed for more than **96 weeks** and have received about **32 reviews**  
+**11217** has been listed for more than **97 weeks** and have received about **27 reviews**  
+**10036** has been listed for more than **66 weeks** and have received about **27 reviews**  
+
+## 4. Conclusion
+
+Based on the analysis over the number of properties, the amount of revenue, and the Cap Rate, we first gathered three groups of top 5 zipcodes. Then, **we chosed 4 zipcodes because of their high performance accross those three metrics.** Those 4 zipcodes are: **10003, 10025, 10036 in Manhattan, and 11217 in Brooklyn**. *10025 and 10036 ranked top 5 for all three metrics while 10003 and 11217 ranked top 5 for two out of three metrics.*   
+
+Although all of them have **performed well** in the following tests on **property diversity, rental availability, and online popularity**; *none of them has a distinguishable performance accross those three tests this time.*  
+
+A detailed comparison is provided as below: 
+```{r echo=FALSE}
+final_top <- final_sum %>% 
+  select(zipcode, neighbourhood_group_cleansed, unique_num, price, cost, 
+         Rent_Rate, Cap_Rate,Revenue_quarter, Revenue_semiyear, Revenue_year, 
+         availability_365, number_of_reviews) %>% 
+  subset(zipcode ==10025 | zipcode == 10003 | zipcode == 11217 | zipcode == 10036)
+
+print(data.frame(t(final_top)))
+```
+
+
+
+
+# IV. Final Thoughts
+
+## 1. Analysis Summary
+For this analytics project, the objective is to identify top zipcodes for our real estate clien who wants to invest in 2 bedrooms rental properties in New York city with the goal of generating considerable short-term gains. First, pre-obtained datasets from AirBnb and Zillow were pre-processed, cleaned and aggregated at zipcode level. Then, they were filtered reduce the redundancy and merged together by zipcode to get a single data table containing all necessary information. After that, Exploratory Data Analysis was conducted using interactive graphs and visuals to figure out which zipcodes are high rewarding.
+
+As for the result, *we suggest that* **10025 and 10036 are the best two zipcodes to invest** *becuase they both have a substaintial number of properties listed and a high potential of return on investment regarding its revenue and Cap Rate*.  Moreover, they both have faily good performance in terms of property diversity, rental occupancy, and online popularity. Good performance in those merits and tests indicate that these two zipcodes are more likely to meet our business goal of generating short-term gains. **10003 and 11217** should also be considered carefully because they also have a similar performace and have a recognizable advantage over other zipcodes.  
+
+## 2. Looking Forward  
+
+There are also several changes that could be adopted to make our analsis even more thorough in the future. They are:   
+
+1. In the final datasets, some of the NA values can be imputed if necessary.  
+
+2. Square feet data is significantly missing in this case but could be useful when making a real estate investment decision. External data sources can be considered if necessary.   
+
+3. Although this analysis has a business context of making short-term profit, we could still consider longer term profitibility as a reference.  
+
+4. Better prediction on investment cost, and consider the possibility of the property appreciation.  
+
+5. The metrics of rental availability and popularity can be modified to better reflect the performance.  
+
+6. Investment portofolio could be formed based on finding the best combination of different property setting in various zipcodes. 
+
+# Appendix
+```{r include=FALSE}
+
+airbnb <- fread("listings.csv",header = TRUE, sep = "," , 
+                stringsAsFactors = TRUE, na.strings = c("","NA"))
+
+zillow <- fread("Zip_Zhvi_2bedroom.csv",header = TRUE, sep = "," , 
+                stringsAsFactors = TRUE, na.strings = c("","NA"))
+```
+
+#### 1. Missing value summary for the original _airbnb_ dataset
+```{r}
+numMissingVal_airbnb <-sapply(airbnb, function(x) sum(length(which(is.na(x)))))  
+data.frame(numMissingVal_airbnb)
+```
+
+#### 2. Missing value summary for the original _zillow_ dataset
+```{r}
+numMissingVal_zillow <-sapply(zillow, function(x) sum(length(which(is.na(x)))))  
+
+data.frame(numMissingVal_zillow)
+```
+
+
+
+
