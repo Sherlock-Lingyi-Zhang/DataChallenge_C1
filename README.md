@@ -6,4 +6,4 @@ This analysis recently become NON-CONFIDENTIAL since the challenge per se has fi
 
 ## To view the analysis
 
-## For best result, please download the html file above and confirm it's html format when open. ##
+For best result, please download the html file above and confirm it's html format when open.
