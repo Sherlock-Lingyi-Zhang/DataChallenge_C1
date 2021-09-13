@@ -1,4 +1,4 @@
-Capital One Data Challenge (Previous Version)
+# Capital One Data Challenge (Previous Version)
 
 This is my work on the Capital One Data Challenge in 2020, which was completed in less than 1 week.
 
